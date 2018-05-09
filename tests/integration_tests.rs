@@ -2783,8 +2783,8 @@ fn string_sort() {
 }
 
 fn if_sort() {
-    #[derive(Clone)]
-    #[allow(dead_code)]
+    //#[derive(Clone)]
+    //#[allow(dead_code)]
 
     let ys = vec![2, 3, 1, 4, 5];
     let ref input_data = WeldVec {
@@ -2809,8 +2809,8 @@ fn if_sort() {
 }
 
 fn simple_sort() {
-    #[derive(Clone)]
-    #[allow(dead_code)]
+    //#[derive(Clone)]
+    //#[allow(dead_code)]
 
     let ys = vec![2, 3, 1, 4, 5];
     let ref input_data = WeldVec {
