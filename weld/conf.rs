@@ -2,10 +2,10 @@
 
 use std::ffi::CString;
 
-use super::WeldConf;
 use super::error::WeldResult;
-use super::passes::OPTIMIZATION_PASSES;
 use super::passes::Pass;
+use super::passes::OPTIMIZATION_PASSES;
+use super::WeldConf;
 
 use std::path::{Path, PathBuf};
 

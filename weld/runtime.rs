@@ -1,4 +1,4 @@
-use libc::{c_void, size_t, int32_t, int64_t};
+use libc::{c_void, int32_t, int64_t, size_t};
 
 #[allow(non_camel_case_types)]
 type work_t = c_void;

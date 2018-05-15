@@ -197,17 +197,15 @@ pub fn fuse_loops_horizontal(expr: &mut Expr<Type>) {
                     return Some(Expr {
                         ty: expr.ty.clone(),
                         kind: For {
-                            iters: vec![
-                                Iter {
-                                    data: Box::new(new_iter_expr),
-                                    start: all_iters[0].start.clone(),
-                                    end: all_iters[0].end.clone(),
-                                    stride: all_iters[0].stride.clone(),
-                                    kind: all_iters[0].kind.clone(),
-                                    shape: all_iters[0].shape.clone(),
-                                    strides: all_iters[0].strides.clone(),
-                                },
-                            ],
+                            iters: vec![Iter {
+                                data: Box::new(new_iter_expr),
+                                start: all_iters[0].start.clone(),
+                                end: all_iters[0].end.clone(),
+                                stride: all_iters[0].stride.clone(),
+                                kind: all_iters[0].kind.clone(),
+                                shape: all_iters[0].shape.clone(),
+                                strides: all_iters[0].strides.clone(),
+                            }],
                             builder: outer_bldr.clone(),
                             func: outer_func.clone(),
                         },

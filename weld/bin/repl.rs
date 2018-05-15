@@ -9,8 +9,8 @@ extern crate clap;
 use clap::{App, Arg};
 
 use libc::c_char;
-use rustyline::Editor;
 use rustyline::error::ReadlineError;
+use rustyline::Editor;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
