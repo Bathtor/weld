@@ -44,6 +44,7 @@ pub enum Token {
     TF32,
     TF64,
     TBool,
+    TUnit,
     TVec,
     TStream,
     TDict,
@@ -150,7 +151,7 @@ pub fn tokenize(input: &str) -> WeldResult<Vec<Token>> {
             "^(if|for|zip|len|lookup|keyexists|slice|sort|exp|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|\
              log|erf|sqrt|simd|select|broadcast|serialize|deserialize|\
              iterate|cudf|simditer|fringeiter|rangeiter|nditer|nextiter|iter|next|merge|result|let|true|false|macro|\
-             i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|vec|stream|dict|appender|streamappender|merger|vecmerger|\
+             i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|unit|vec|stream|dict|appender|streamappender|merger|vecmerger|\
              dictmerger|groupmerger|tovec|min|max|pow)$").unwrap();
 
         static ref COMMENT_RE: Regex = Regex::new("#.*$").unwrap();
@@ -208,6 +209,7 @@ pub fn tokenize(input: &str) -> WeldResult<Vec<Token>> {
                 "f32" => TF32,
                 "f64" => TF64,
                 "bool" => TBool,
+                "unit" => TUnit,
                 "vec" => TVec,
                 "stream" => TStream,
                 "dict" => TDict,
@@ -390,6 +392,7 @@ impl fmt::Display for Token {
                         TF32 => "f32",
                         TF64 => "f64",
                         TBool => "bool",
+                        TUnit => "unit",
                         TVec => "vec",
                         TStream => "stream",
                         TDict => "dict",

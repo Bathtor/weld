@@ -918,7 +918,17 @@ impl<'t> Parser<'t> {
             TCUDF => {
                 let mut args = vec![];
                 try!(self.consume(TOpenBracket));
-                let sym_name = try!(self.symbol());
+                let func_ref = match self.peek() {
+                    TTimes => {
+                        self.next();
+                        let func_pointer = self.expr()?;
+                        FunctionRef::Pointer(func_pointer)
+                    }
+                    _ => {
+                        let sym_name = self.symbol()?;
+                        FunctionRef::Name(sym_name.name)
+                    }
+                };
                 try!(self.consume(TComma));
                 let return_ty = try!(self.type_());
                 try!(self.consume(TCloseBracket));
@@ -933,7 +943,7 @@ impl<'t> Parser<'t> {
                 try!(self.consume(TCloseParen));
                 Ok(expr_box(
                     CUDF {
-                        func_ref: FunctionRef::Name(sym_name.name),
+                        func_ref,
                         return_ty: Box::new(return_ty),
                         args: args,
                     },
@@ -1335,6 +1345,7 @@ impl<'t> Parser<'t> {
             TF32 => Ok(Scalar(ScalarKind::F32)),
             TF64 => Ok(Scalar(ScalarKind::F64)),
             TBool => Ok(Scalar(ScalarKind::Bool)),
+            TUnit => Ok(Unit),
 
             TVec => {
                 try!(self.consume(TOpenBracket));
@@ -1448,7 +1459,24 @@ impl<'t> Parser<'t> {
                 try!(self.consume(TCloseBrace));
                 Ok(Struct(types))
             }
+            TBar => {
+                let mut param_types: Vec<PartialType> = Vec::new();
+                while *self.peek() != TBar {
+                    let ty = self.type_()?;
+                    param_types.push(ty);
+                    if *self.peek() == TComma {
+                        self.next();
+                    } else if *self.peek() != TBar {
+                        return weld_err!("Expected ',' or '|'");
+                    }
+                }
+                try!(self.consume(TBar));
+                try!(self.consume(TOpenParen));
+                let return_ty = self.type_()?;
+                try!(self.consume(TCloseParen));
 
+                Ok(Function(param_types, Box::new(return_ty)))
+            }
             TQuestion => Ok(Unknown),
 
             ref other => weld_err!("Expected type but got '{}'", other),

@@ -1760,6 +1760,23 @@ impl LlvmGenerator {
                 let elem_type = self.llvm_type(elem)?;
                 format!("void ({}*)*", elem_type)
             }
+            Function(ref args, ref ret) => {
+                let mut arg_types: Vec<String> = Vec::new();
+                for arg in args {
+                    if (arg != &Type::Unit) {
+                        let t = self.llvm_type(arg)?;
+                        let s = format!("{}*", t);
+                        arg_types.push(s);
+                    }
+                }
+                let ret_type = self.llvm_type(ret)?;
+                if arg_types.len() == 0 {
+                    format!("void ({}*)*", ret_type)
+                } else {
+                    let arg_type = arg_types.join(",");
+                    format!("void ({}, {}*)*", arg_type, ret_type)
+                }
+            }
             _ => return weld_err!("Unsupported type {}", print_type(ty))?,
         })
     }
@@ -4018,7 +4035,7 @@ impl LlvmGenerator {
                 ctx.code.add(format!("call void @f{}({}, i32 %cur.tid)", func, arg_types));
                 ctx.code.add("br label %body.end");
             }
-            
+
             CallFunctionAndJump(func, block) => {
                 self.gen_top_level_function(sir, &sir.funcs[func])?;
                 let ref params_sorted = sir.funcs[func].params;

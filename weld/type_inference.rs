@@ -5,6 +5,7 @@ use super::ast::IterKind;
 use super::ast::LiteralKind::*;
 use super::ast::ScalarKind::*;
 use super::ast::Symbol;
+use super::ast::FunctionRef;
 use super::error::*;
 use super::partial_types::PartialBuilderKind::*;
 use super::partial_types::PartialExpr;
@@ -211,7 +212,43 @@ fn infer_locally(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> 
             _ => weld_err!("Broadcast only works with Scalar(_)"),
         },
 
-        CUDF { ref return_ty, .. } => push_type(&mut expr.ty, return_ty, "CUDF"),
+        CUDF {
+            func_ref: FunctionRef::Name(_),
+            ref return_ty,
+            ..
+        } => push_type(&mut expr.ty, return_ty, "CUDF"),
+
+        CUDF {
+            func_ref: FunctionRef::Pointer(ref mut func_pointer),
+            ref mut args,
+            ref mut return_ty,
+        } => {
+            let mut arg_types: Vec<PartialType> = args.iter().map(|e| e.ty.clone()).collect();
+            let function_pointer_type = &mut func_pointer.as_mut().ty;
+            match function_pointer_type {
+                Function(ref mut p_arg_types, ref mut p_return_ty) => {
+                    if arg_types.len() == p_arg_types.len() {
+                        let mut changed = false;
+                        for i in 0..arg_types.len() {
+                            changed |= sync_types(&mut arg_types[i], &mut p_arg_types[i], "CUDF")?;
+                        }
+                        changed |= sync_types(return_ty.as_mut(), p_return_ty, "CUDF")?;
+                        changed |= push_type(&mut expr.ty, return_ty, "CUDF")?;
+                        Ok(changed)
+                    } else {
+                        weld_err!("CUDF rgument lists must match in length with their type")
+                    }
+                }
+                Unknown => {
+                    let mut changed = false;
+                    let f = Function(arg_types, return_ty.clone());
+                    changed |= push_type(function_pointer_type, &f, "CUDF")?;
+                    changed |= push_type(&mut expr.ty, return_ty, "CUDF")?;
+                    Ok(changed)
+                }
+                _ => weld_err!("CUDFs over function pointers must have function types"),
+            }
+        }
 
         Serialize(_) => push_complete_type(&mut expr.ty, Vector(Box::new(Scalar(I8))), "Serialize"),
         Deserialize { ref value_ty, .. } => push_type(&mut expr.ty, value_ty, "Deserialize"),
