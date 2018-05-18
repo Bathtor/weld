@@ -37,3 +37,6 @@ code-[0-9]*.ll
 # Ignore Eclipse stuff
 .project
 .settings
+
+# Ignore XCode stuff
+*.xcodeproj

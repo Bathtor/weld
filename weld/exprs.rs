@@ -1,5 +1,7 @@
 //! Constructors for creating typed expressions.
 
+use std;
+
 use super::annotations::*;
 use super::ast::BuilderKind::*;
 use super::ast::ExprKind::*;
@@ -21,6 +23,7 @@ pub fn literal_expr(kind: LiteralKind) -> WeldResult<Expr<Type>> {
     new_expr(
         Literal(kind.clone()),
         match kind {
+            UnitLiteral => Unit,
             BoolLiteral(_) => Scalar(ScalarKind::Bool),
             I8Literal(_) => Scalar(ScalarKind::I8),
             I16Literal(_) => Scalar(ScalarKind::I16),
@@ -156,6 +159,8 @@ pub fn getfield_expr(expr: Expr<Type>, index: u32) -> WeldResult<Expr<Type>> {
 pub fn length_expr(expr: Expr<Type>) -> WeldResult<Expr<Type>> {
     if let Vector(_) = expr.ty {
         new_expr(Length { data: Box::new(expr) }, Scalar(ScalarKind::I64))
+    } else if let Stream(_) = expr.ty {
+        literal_expr(LiteralKind::F32Literal(std::f32::INFINITY.to_bits()))
     } else {
         weld_err!("Internal error: Mismatched types in length_expr")
     }
@@ -502,6 +507,11 @@ pub fn merge_expr(builder: Expr<Type>, value: Expr<Type>) -> WeldResult<Expr<Typ
                     return err;
                 }
             }
+            StreamAppender(ref elem_ty) => {
+                if elem_ty.as_ref() != &value.ty {
+                    return err;
+                }
+            }
             Merger(ref elem_ty, _) => {
                 if elem_ty.as_ref() != &value.ty {
                     return err;
@@ -572,6 +582,7 @@ pub fn result_expr(builder: Expr<Type>) -> WeldResult<Expr<Type>> {
     let ty = if let Builder(ref bk, _) = builder.ty {
         match *bk {
             Appender(ref elem_ty) => Vector(elem_ty.clone()),
+            StreamAppender(ref elem_ty) => Stream(elem_ty.clone()),
             Merger(ref elem_ty, _) => *elem_ty.clone(),
             DictMerger(ref kt, ref vt, _) => Dict(kt.clone(), vt.clone()),
             GroupMerger(ref kt, ref vt) => Dict(kt.clone(), Box::new(Vector(vt.clone()))),

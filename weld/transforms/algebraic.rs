@@ -702,6 +702,7 @@ fn is_even(e: &Expr<Type>) -> bool {
         Literal(ref kind) => {
             use ast::LiteralKind::*;
             match kind {
+                UnitLiteral => false,
                 BoolLiteral(_) => false,
                 I8Literal(n) => n.is_even(),
                 I16Literal(n) => n.is_even(),
@@ -828,6 +829,7 @@ impl RangeClassification {
 fn classify(e: &Expr<Type>) -> RangeClassification {
     match e.kind {
         Literal(ref lkind) => match lkind {
+            UnitLiteral => RangeClassification::Unknown,
             BoolLiteral(_) => RangeClassification::Unknown,
             I8Literal(n) => {
                 if *n == 0 {

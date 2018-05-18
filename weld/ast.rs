@@ -38,9 +38,11 @@ impl fmt::Display for Symbol {
 /// A data type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
+    Unit,
     Scalar(ScalarKind),
     Simd(ScalarKind),
     Vector(Box<Type>),
+    Stream(Box<Type>),
     Dict(Box<Type>, Box<Type>),
     Builder(BuilderKind, Annotations),
     Struct(Vec<Type>),
@@ -67,6 +69,15 @@ impl Type {
         use self::Type::*;
         match *self {
             Scalar(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_stream_builder(&self) -> bool {
+        use self::BuilderKind::*;
+        use self::Type::*;
+        match self {
+            Builder(StreamAppender(_), _) => true,
             _ => false,
         }
     }
@@ -216,6 +227,7 @@ impl fmt::Display for ScalarKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BuilderKind {
     Appender(Box<Type>),
+    StreamAppender(Box<Type>),
     Merger(Box<Type>, BinOpKind),
     /// key_type, value_type, binop
     DictMerger(Box<Type>, Box<Type>, BinOpKind),
@@ -246,6 +258,8 @@ pub enum IterKind {
     FringeIter, // A fringe iterator, handling the fringe of a vector iter.
     NdIter,     // multi-dimensional nd-iter
     RangeIter,
+    NextIter, // An iterator over a function that returns one value at a time
+    UnknownIter,  // iterator still needs to be inferred from data types
 }
 
 impl fmt::Display for IterKind {
@@ -257,6 +271,8 @@ impl fmt::Display for IterKind {
             FringeIter => "fringe",
             NdIter => "nditer",
             RangeIter => "range",
+            NextIter => "next",
+            UnknownIter => "?iter"
         };
         f.write_str(text)
     }
@@ -445,6 +461,7 @@ impl<T: TypeBounds> ExprKind<T> {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum LiteralKind {
+    UnitLiteral,
     BoolLiteral(bool),
     I8Literal(i8),
     I16Literal(i16),

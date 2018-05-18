@@ -44,6 +44,7 @@ pub enum Token {
     TF64,
     TBool,
     TVec,
+    TStream,
     TDict,
     TZip,
     TScalarIter,
@@ -51,6 +52,7 @@ pub enum Token {
     TFringeIter,
     TNdIter,
     TRangeIter,
+    TNextIter,
     TLen,
     TLookup,
     TKeyExists,
@@ -76,6 +78,7 @@ pub enum Token {
     TSqrt,
     TCUDF,
     TAppender,
+    TStreamAppender,
     TMerger,
     TDictMerger,
     TGroupMerger,
@@ -145,8 +148,8 @@ pub fn tokenize(input: &str) -> WeldResult<Vec<Token>> {
         static ref KEYWORD_RE: Regex = Regex::new(
             "^(if|for|zip|len|lookup|keyexists|slice|sort|exp|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|\
              log|erf|sqrt|simd|select|broadcast|serialize|deserialize|\
-             iterate|cudf|simditer|fringeiter|rangeiter|nditer|iter|merge|result|let|true|false|macro|\
-             i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|vec|dict|appender|merger|vecmerger|\
+             iterate|cudf|simditer|fringeiter|rangeiter|nditer|nextiter|iter|merge|result|let|true|false|macro|\
+             i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|vec|stream|dict|appender|streamappender|merger|vecmerger|\
              dictmerger|groupmerger|tovec|min|max|pow)$").unwrap();
 
         static ref COMMENT_RE: Regex = Regex::new("#.*$").unwrap();
@@ -205,8 +208,10 @@ pub fn tokenize(input: &str) -> WeldResult<Vec<Token>> {
                 "f64" => TF64,
                 "bool" => TBool,
                 "vec" => TVec,
+                "stream" => TStream,
                 "dict" => TDict,
                 "appender" => TAppender,
+                "streamappender" => TStreamAppender,
                 "merger" => TMerger,
                 "dictmerger" => TDictMerger,
                 "groupmerger" => TGroupMerger,
@@ -218,6 +223,7 @@ pub fn tokenize(input: &str) -> WeldResult<Vec<Token>> {
                 "fringeiter" => TFringeIter,
                 "nditer" => TNdIter,
                 "rangeiter" => TRangeIter,
+                "nextiter" => TNextIter,
                 "len" => TLen,
                 "lookup" => TLookup,
                 "keyexists" => TKeyExists,
@@ -382,8 +388,10 @@ impl fmt::Display for Token {
                         TF64 => "f64",
                         TBool => "bool",
                         TVec => "vec",
+                        TStream => "stream",
                         TDict => "dict",
                         TAppender => "appender",
+                        TStreamAppender => "streamappender",
                         TMerger => "merger",
                         TDictMerger => "dictmerger",
                         TGroupMerger => "groupmerger",
@@ -395,6 +403,7 @@ impl fmt::Display for Token {
                         TFringeIter => "fringeiter",
                         TNdIter => "nditer",
                         TRangeIter => "rangeiter",
+                        TNextIter => "nextiter",
                         TLen => "len",
                         TLookup => "lookup",
                         TKeyExists => "keyexists",
@@ -508,6 +517,29 @@ fn basic_tokenize() {
     assert_eq!(
         tokenize("groupmerger[i32, i32]").unwrap(),
         vec![TGroupMerger, TOpenBracket, TI32, TComma, TI32, TCloseBracket, TEndOfInput]
+    );
+
+    assert_eq!(tokenize("stream[i32]").unwrap(), vec![TStream, TOpenBracket, TI32, TCloseBracket, TEndOfInput]);
+
+    assert_eq!(
+        tokenize("streamappender[i32]").unwrap(),
+        vec![TStreamAppender, TOpenBracket, TI32, TCloseBracket, TEndOfInput]
+    );
+
+    assert_eq!(
+        tokenize("nextiter(s:stream[i32])").unwrap(),
+        vec![
+            TNextIter,
+            TOpenParen,
+            TIdent("s".into()),
+            TColon,
+            TStream,
+            TOpenBracket,
+            TI32,
+            TCloseBracket,
+            TCloseParen,
+            TEndOfInput,
+        ]
     );
 
     assert_eq!(

@@ -455,7 +455,7 @@ impl<'t> Parser<'t> {
         Ok(res)
     }
 
-    /// Parse a type abscription expression such as 'e: T', or lower-level ones in precedence.
+    /// Parse a type ascription expression such as 'e: T', or lower-level ones in precedence.
     fn ascribe_expr(&mut self) -> WeldResult<Box<PartialExpr>> {
         let mut expr = try!(self.apply_expr());
         if *self.peek() == TColon {
@@ -566,6 +566,22 @@ impl<'t> Parser<'t> {
                 try!(self.consume(TCloseParen));
                 Ok(iter)
             }
+            TNextIter => {
+                try!(self.consume(TNextIter));
+                try!(self.consume(TOpenParen));
+                let data = try!(self.expr());
+                try!(self.consume(TCloseParen));
+                let iter = Iter {
+                    data,
+                    start: None,
+                    end: None,
+                    stride: None,
+                    kind: NextIter,
+                    shape: None,
+                    strides: None,
+                };
+                Ok(iter)
+            }
             _ => {
                 let data = try!(self.expr());
                 let iter = Iter {
@@ -573,13 +589,7 @@ impl<'t> Parser<'t> {
                     start: None,
                     end: None,
                     stride: None,
-                    kind: match iter {
-                        TSimdIter => SimdIter,
-                        TFringeIter => FringeIter,
-                        TNdIter => NdIter,
-                        TRangeIter => RangeIter,
-                        _ => ScalarIter,
-                    },
+                    kind: UnknownIter,
                     shape: None,
                     strides: None,
                 };
@@ -1078,6 +1088,31 @@ impl<'t> Parser<'t> {
                 Ok(expr)
             }
 
+            TStreamAppender => {
+                let elem_type = if *self.peek() == TOpenBracket {
+                    try!(self.consume(TOpenBracket));
+                    let t = try!(self.type_());
+                    try!(self.consume(TCloseBracket));
+                    t
+                } else {
+                    Unknown
+                };
+
+                let arg = if *self.peek() == TOpenParen {
+                    self.consume(TOpenParen)?;
+                    //let arg = self.expr()?;
+                    self.consume(TCloseParen)?;
+                    //Some(arg)
+                    None
+                } else {
+                    None
+                };
+
+                let mut expr = expr_box(NewBuilder(arg), Annotations::new());
+                expr.ty = Builder(StreamAppender(Box::new(elem_type)), annotations);
+                Ok(expr)
+            }
+
             TMerger => {
                 let elem_type: PartialType;
                 self.consume(TOpenBracket)?;
@@ -1300,6 +1335,13 @@ impl<'t> Parser<'t> {
                 Ok(Vector(Box::new(elem_type)))
             }
 
+            TStream => {
+                try!(self.consume(TOpenBracket));
+                let elem_type = try!(self.type_());
+                try!(self.consume(TCloseBracket));
+                Ok(Stream(Box::new(elem_type)))
+            }
+
             TSimd => {
                 try!(self.consume(TOpenBracket));
                 let elem_type = try!(self.type_());
@@ -1317,6 +1359,14 @@ impl<'t> Parser<'t> {
                 try!(self.consume(TCloseBracket));
 
                 Ok(Builder(Appender(Box::new(elem_type)), annotations))
+            }
+
+            TStreamAppender => {
+                try!(self.consume(TOpenBracket));
+                let elem_type = try!(self.type_());
+                try!(self.consume(TCloseBracket));
+
+                Ok(Builder(StreamAppender(Box::new(elem_type)), annotations))
             }
 
             TMerger => {
@@ -1460,6 +1510,9 @@ fn basic_parsing() {
     let e = parse_expr("appender[i32](1000L)").unwrap();
     assert_eq!(print_expr_without_indent(&e), "appender[i32](1000L)");
 
+    let e = parse_expr("streamappender[i32]").unwrap();
+    assert_eq!(print_expr_without_indent(&e), "streamappender[i32]");
+
     let e = parse_expr("@(impl:local) dictmerger[i32,i32,+]").unwrap();
     assert_eq!(print_expr_without_indent(&e), "@(impl:local)dictmerger[i32,i32,+]");
 
@@ -1484,6 +1537,9 @@ fn basic_parsing() {
 
     let t = parse_type("{i32, vec[vec[?]], ?}").unwrap();
     assert_eq!(print_type(&t), "{i32,vec[vec[?]],?}");
+
+    let t = parse_type("stream[vec[i32]]").unwrap();
+    assert_eq!(print_type(&t), "stream[vec[i32]]");
 
     let t = parse_type("{}").unwrap();
     assert_eq!(print_type(&t), "{}");

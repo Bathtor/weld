@@ -86,7 +86,7 @@ fn parse_and_print_simple_expressions() {
     assert_eq!(print_expr_without_indent(&e).as_str(), "|a,b|(a+b)");
 
     let e = parse_expr("for(d, appender, |e| e+1)").unwrap();
-    assert_eq!(print_expr_without_indent(&e).as_str(), "for(d,appender[?],|e|(e+1))");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "for(?iter(d),appender[?],|e|(e+1))");
 }
 
 #[test]
@@ -113,13 +113,13 @@ fn parse_and_print_uniquified_expressions() {
     // Lambdas and Lets
     let mut e = parse_expr("let b = for([1], appender[i32], |b,i,e| merge(b, e)); b").unwrap();
     let _ = uniquify(&mut e);
-    assert_eq!(print_expr_without_indent(&e).as_str(), "(let b__1=(for([1],appender[i32],|b,i,e|merge(b,e)));b__1)");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "(let b__1=(for(?iter([1]),appender[i32],|b,i,e|merge(b,e)));b__1)");
 }
 
 #[test]
 fn parse_and_print_for_expressions() {
     let e = parse_expr("for(d, appender, |e| e+1)").unwrap();
-    assert_eq!(print_expr_without_indent(&e).as_str(), "for(d,appender[?],|e|(e+1))");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "for(?iter(d),appender[?],|e|(e+1))");
 
     let e = parse_expr("for(iter(d), appender, |e| e+1)").unwrap();
     assert_eq!(print_expr_without_indent(&e).as_str(), "for(d,appender[?],|e|(e+1))");
@@ -128,13 +128,13 @@ fn parse_and_print_for_expressions() {
     assert_eq!(print_expr_without_indent(&e).as_str(), "for(iter(d,0L,4L,1L),appender[?],|e|(e+1))");
 
     let e = parse_expr("for(zip(d), appender, |e| e+1)").unwrap();
-    assert_eq!(print_expr_without_indent(&e).as_str(), "for(d,appender[?],|e|(e+1))");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "for(?iter(d),appender[?],|e|(e+1))");
 
     let e = parse_expr("for(zip(d,e), appender, |e| e+1)").unwrap();
-    assert_eq!(print_expr_without_indent(&e).as_str(), "for(zip(d,e),appender[?],|e|(e+1))");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "for(zip(?iter(d),?iter(e)),appender[?],|e|(e+1))");
 
     let e = parse_expr("for(zip(a,b,iter(c,0L,4L,1L),iter(d)), appender, |e| e+1)").unwrap();
-    assert_eq!(print_expr_without_indent(&e).as_str(), "for(zip(a,b,iter(c,0L,4L,1L),d),appender[?],|e|(e+1))");
+    assert_eq!(print_expr_without_indent(&e).as_str(), "for(zip(?iter(a),?iter(b),iter(c,0L,4L,1L),d),appender[?],|e|(e+1))");
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn parse_and_print_typed_expr_without_indentations() {
     infer_types(&mut e).unwrap();
     assert_eq!(
         print_typed_expr_without_indent(&e).as_str(),
-        "for([1],appender[i32],|b:appender[i32],i:i64,x:i32|merge(b:appender[i32],x:i32))"
+        "for(?iter([1]),appender[i32],|b:appender[i32],i:i64,x:i32|merge(b:appender[i32],x:i32))"
     );
 }
 

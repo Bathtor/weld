@@ -54,6 +54,7 @@ pub mod sir;
 pub mod tokenizer;
 pub mod transforms;
 pub mod type_inference;
+pub mod iter_inference;
 pub mod util;
 
 pub mod easy_ll;

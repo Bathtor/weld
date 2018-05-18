@@ -116,6 +116,7 @@ fn infer_up(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> {
 /// Return true if any new expression's type was inferred, or an error if types are inconsistent.
 fn infer_locally(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> {
     match expr.kind {
+        Literal(UnitLiteral) => push_complete_type(&mut expr.ty, Unit, "UnitLiteral"),
         Literal(I8Literal(_)) => push_complete_type(&mut expr.ty, Scalar(I8), "I8Literal"),
         Literal(I16Literal(_)) => push_complete_type(&mut expr.ty, Scalar(I16), "I16Literal"),
         Literal(I32Literal(_)) => push_complete_type(&mut expr.ty, Scalar(I32), "I32Literal"),
@@ -425,9 +426,14 @@ fn infer_locally(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> 
             let mut changed = false;
             // Push iters and builder type into func
             let mut elem_types = vec![];
+            let is_stream = iters.iter().any(|i| match i.data.ty {
+                Stream(_) => true,
+                _ => false,
+            });
             for iter in iters.iter_mut() {
                 let mut elem_type = match iter.data.ty {
                     Vector(ref elem) => *elem.clone(),
+                    Stream(ref elem) => *elem.clone(),
                     Unknown => Unknown,
                     _ => return weld_err!("non-vector type in For"),
                 };
@@ -460,48 +466,65 @@ fn infer_locally(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> 
             // The type could also be vectorized.
             let mut elem_types = if elem_types.len() == 1 { elem_types[0].clone() } else { Struct(elem_types) };
 
-            // Check if the argument to the function is a vector.
             if let Lambda { ref params, .. } = func.kind {
-                let mut vector_param = false;
-                if let Simd(ref kind) = params[2].ty {
-                    elem_types = Simd(kind.clone());
-                    vector_param = true;
-                } else if let Struct(ref field_tys) = params[2].ty {
-                    if field_tys.iter().all(|t| match *t {
-                        Simd(_) => true,
-                        _ => false,
-                    }) {
-                        elem_types = Struct(
-                            field_tys
-                                .iter()
-                                .map(|t| match *t {
-                                    Scalar(ref kind) => Simd(kind.clone()),
-                                    ref a => a.clone(),
-                                })
-                                .collect(),
-                        );
-                        vector_param = true;
+                if !is_stream {
+                    // Check if the argument to the function is a vector.
+                    if params.len() != 3 {
+                        return weld_err!("For function over non-stream needs 3 parameters");
                     }
-                }
+                    let mut vector_param = false;
+                    if let Simd(ref kind) = params[2].ty {
+                        elem_types = Simd(kind.clone());
+                        vector_param = true;
+                    } else if let Struct(ref field_tys) = params[2].ty {
+                        if field_tys.iter().all(|t| match *t {
+                            Simd(_) => true,
+                            _ => false,
+                        }) {
+                            elem_types = Struct(
+                                field_tys
+                                    .iter()
+                                    .map(|t| match *t {
+                                        Scalar(ref kind) => Simd(kind.clone()),
+                                        ref a => a.clone(),
+                                    })
+                                    .collect(),
+                            );
+                            vector_param = true;
+                        }
+                    }
 
-                if vector_param {
-                    if !iters.iter().all(|i| i.kind == IterKind::SimdIter) {
-                        return weld_err!("For with vector arguments requires a Simd iterator");
+                    if vector_param {
+                        if !iters.iter().all(|i| i.kind == IterKind::SimdIter) {
+                            return weld_err!("For with vector arguments requires a Simd iterator");
+                        }
+                    } else {
+                        if iters.iter().any(|i| i.kind == IterKind::SimdIter) {
+                            return weld_err!("For without vector arguments requires a Scalar or Fringe iterator");
+                        }
                     }
                 } else {
-                    if iters.iter().any(|i| i.kind == IterKind::SimdIter) {
-                        return weld_err!("For without vector arguments requires a Scalar or Fringe iterator");
+                    if params.len() != 2 {
+                        return weld_err!("For function over stream needs 2 parameters");
                     }
                 }
             }
 
             let bldr_type = builder.ty.clone();
-            let func_type = Function(vec![bldr_type.clone(), Scalar(I64), elem_types], Box::new(bldr_type));
+            if is_stream && !bldr_type.is_stream_builder() {
+                return weld_err!("Streams can only be merged into streams!");
+            }
+
+            let func_type = if !is_stream {
+                Function(vec![bldr_type.clone(), Scalar(I64), elem_types], Box::new(bldr_type))
+            } else {
+                Function(vec![bldr_type.clone(), elem_types], Box::new(bldr_type))
+            };
             changed |= try!(push_type(&mut func.ty, &func_type, "For"));
 
             // Push func's argument type and return type into builder
             match func.ty {
-                Function(ref params, ref result) if params.len() == 3 => {
+                Function(ref params, ref result) => {
                     changed |= try!(push_type(&mut builder.ty, &params[0], "For"));
                     changed |= try!(push_type(&mut builder.ty, result.as_ref(), "For"));
                 }
@@ -659,6 +682,11 @@ fn push_type(dest: &mut PartialType, src: &PartialType, context: &str) -> WeldRe
             Ok(true)
         }
 
+        Unit => match *src {
+            Unit => Ok(false),
+            _ => weld_err!("Mismatched types in Unit, {}", context),
+        },
+
         Scalar(ref d) => match *src {
             Scalar(ref s) if d == s => Ok(false),
             _ => weld_err!("Mismatched types in Scalar, {}", context),
@@ -672,6 +700,11 @@ fn push_type(dest: &mut PartialType, src: &PartialType, context: &str) -> WeldRe
         Vector(ref mut dest_elem) => match *src {
             Vector(ref src_elem) => push_type(dest_elem, src_elem, context),
             _ => weld_err!("Mismatched types in Vector, {}", context),
+        },
+
+        Stream(ref mut dest_elem) => match *src {
+            Stream(ref src_elem) => push_type(dest_elem, src_elem, context),
+            _ => weld_err!("Mismatched types in Stream, {}", context),
         },
 
         Dict(ref mut dest_key_ty, ref mut dest_value_ty) => match *src {
@@ -726,6 +759,21 @@ fn push_type(dest: &mut PartialType, src: &PartialType, context: &str) -> WeldRe
                 Ok(changed)
             }
             _ => weld_err!("Mismatched types in Appender, {}", context),
+        },
+
+        Builder(StreamAppender(ref mut dest_elem), ref mut dest_annotations) => match *src {
+            Builder(StreamAppender(ref src_elem), ref src_annotations) => {
+                let mut changed = false;
+                changed |= try!(push_type(dest_elem.as_mut(), src_elem.as_ref(), context));
+                if *dest_annotations != *src_annotations {
+                    if !src_annotations.is_empty() {
+                        *dest_annotations = src_annotations.clone();
+                        changed |= true;
+                    }
+                }
+                Ok(changed)
+            }
+            _ => weld_err!("Mismatched types in StreamAppender, {}", context),
         },
 
         Builder(DictMerger(ref mut dest_key_ty, ref mut dest_value_ty, ref mut dest_merge_ty, _), ref mut dest_annotations) => {
@@ -1041,7 +1089,7 @@ fn infer_annotations() {
     assert!(infer_types(&mut e).is_ok());
     assert_eq!(
         print_typed_expr_without_indent(&e).as_str(),
-        "result(for([1,2,3],@(impl:local)dictmerger[i32,i32,+],\
+        "result(for(?iter([1,2,3]),@(impl:local)dictmerger[i32,i32,+],\
          |b:@(impl:local)dictmerger[i32,i32,+],i:i64,e:i32|\
          merge(b:@(impl:local)dictmerger[i32,i32,+],{e:i32,e:i32})))"
     );
@@ -1054,7 +1102,7 @@ fn infer_annotations() {
     assert!(infer_types(&mut e).is_ok());
     assert_eq!(
         print_typed_expr_without_indent(&e).as_str(),
-        "result(for([1,2,3],@(impl:local)dictmerger[i32,i32,+],\
+        "result(for(?iter([1,2,3]),@(impl:local)dictmerger[i32,i32,+],\
          |b:@(impl:local)dictmerger[i32,i32,+],i:i64,e:i32|\
          merge(b:@(impl:local)dictmerger[i32,i32,+],{e:i32,e:i32})))"
     );

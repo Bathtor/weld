@@ -19,9 +19,11 @@ pub trait PrintableType: TypeBounds {
 impl PrintableType for Type {
     fn print(&self) -> String {
         match *self {
+            Unit => "unit".to_string(),
             Scalar(ref kind) => format!("{}", kind),
             Simd(ref kind) => format!("simd[{}]", kind),
             Vector(ref elem) => format!("vec[{}]", elem.print()),
+            Stream(ref elem) => format!("stream[{}]", elem.print()),
             Dict(ref kt, ref vt) => format!("dict[{},{}]", kt.print(), vt.print()),
             Struct(ref elems) => join("{", ",", "}", elems.iter().map(|e| e.print())),
             Function(ref params, ref ret) => {
@@ -30,6 +32,7 @@ impl PrintableType for Type {
                 res.push_str(")");
                 res
             }
+            Builder(StreamAppender(ref t), ref annotations) => format!("{}streamappender[{}]", annotations, t.print()),
             Builder(Appender(ref t), ref annotations) => format!("{}appender[{}]", annotations, t.print()),
             Builder(DictMerger(ref kt, ref vt, op), ref annotations) => format!("{}dictmerger[{},{},{}]", annotations, kt.print(), vt.print(), op),
             Builder(GroupMerger(ref kt, ref vt), ref annotations) => format!("{}groupmerger[{},{}]", annotations, kt.print(), vt.print()),
@@ -46,9 +49,11 @@ impl PrintableType for PartialType {
         use partial_types::PartialType::*;
         match *self {
             Unknown => "?".to_string(),
+            Unit => "unit".to_string(),
             Scalar(ref kind) => format!("{}", kind),
             Simd(ref kind) => format!("simd[{}]", kind),
             Vector(ref elem) => format!("vec[{}]", elem.print()),
+            Stream(ref elem) => format!("stream[{}]", elem.print()),
             Dict(ref kt, ref vt) => format!("dict[{},{}]", kt.print(), vt.print()),
             Struct(ref elems) => join("{", ",", "}", elems.iter().map(|e| e.print())),
             Function(ref params, ref ret) => {
@@ -56,6 +61,7 @@ impl PrintableType for PartialType {
                 res.push_str(&ret.print());
                 res
             }
+            Builder(StreamAppender(ref elem), ref annotations) => format!("{}streamappender[{}]", annotations, elem.print()),
             Builder(Appender(ref elem), ref annotations) => format!("{}appender[{}]", annotations, elem.print()),
             Builder(DictMerger(ref kt, ref vt, _, op), ref annotations) => format!("{}dictmerger[{},{},{}]", annotations, kt.print(), vt.print(), op),
             Builder(VecMerger(ref elem, _, op), ref annotations) => format!("{}vecmerger[{},{}]", annotations, elem.print(), op),
@@ -109,6 +115,8 @@ fn print_iter_kind<T: PrintableType>(iter: &Iter<T>) -> &str {
         IterKind::FringeIter => "fringe",
         IterKind::NdIter => "nditer",
         IterKind::RangeIter => "range",
+        IterKind::NextIter => "next",
+        IterKind::UnknownIter => "?"
     }
 }
 
@@ -367,6 +375,7 @@ fn print_expr_impl<T: PrintableType>(expr: &Expr<T>, typed: bool, indent: i32, s
 /// Print a vector literal value.
 pub fn print_vector_literal(lit: &LiteralKind) -> String {
     match *lit {
+        UnitLiteral => "<(), (), ..>".to_string(),
         BoolLiteral(v) => format!("<{}, {}, ..>", v, v),
         I8Literal(v) => format!("<{}, {}, ..>", v, v),
         I16Literal(v) => format!("<{}, {}, ..>", v, v),
@@ -400,6 +409,7 @@ pub fn print_vector_literal(lit: &LiteralKind) -> String {
 /// Print a literal value.
 pub fn print_literal(lit: &LiteralKind) -> String {
     match *lit {
+        UnitLiteral => "()".to_string(),
         BoolLiteral(v) => format!("{}", v),
         I8Literal(v) => format!("{}", v),
         I16Literal(v) => format!("{}", v),

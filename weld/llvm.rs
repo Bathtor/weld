@@ -22,6 +22,7 @@ use super::ast::Type::*;
 use super::ast::*;
 use super::code_builder::CodeBuilder;
 use super::error::*;
+use super::iter_inference;
 use super::macro_processor;
 use super::passes::*;
 use super::pretty_print::*;
@@ -123,9 +124,11 @@ trait HasPointer {
 impl HasPointer for Type {
     fn has_pointer(&self) -> bool {
         match *self {
+            Unit => false,
             Scalar(_) => false,
             Simd(_) => false,
             Vector(_) => true,
+            Stream(_) => true,
             Dict(_, _) => true,
             Builder(_, _) => true,
             Struct(ref tys) => tys.iter().any(|ref t| t.has_pointer()),
@@ -151,6 +154,12 @@ pub fn compile_program(program: &Program, conf: &ParsedConf, stats: &mut Compila
     let end = PreciseTime::now();
     debug!("After type inference:\n{}\n", print_typed_expr(&expr));
     stats.weld_times.push(("Type Inference".to_string(), start.to(end)));
+
+    let start = PreciseTime::now();
+    iter_inference::infer_iterators(&mut expr)?;
+    let end = PreciseTime::now();
+    debug!("After iterator inference:\n{}\n", print_typed_expr(&expr));
+    stats.weld_times.push(("Iterator Inference".to_string(), start.to(end)));
 
     apply_opt_passes(&mut expr, &conf.optimization_passes, stats, conf.enable_experimental_passes)?;
 
@@ -874,6 +883,8 @@ impl LlvmGenerator {
                  * Note: compared to the scalar/simd case, we don't need to consider start/end */
                 ctx.code.add(format!("{} = load i64, i64* {}", num_iters_str, prod_ptr));
             }
+            IterKind::NextIter => unimplemented!(),
+            IterKind::UnknownIter => return weld_err!("Iterator type should have been filled in by now!"),
         }
         Ok((String::from(num_iters_str), fringe_start_str))
     }
@@ -1710,6 +1721,7 @@ impl LlvmGenerator {
     /// Return the LLVM type name corresponding to a Weld type.
     fn llvm_type(&mut self, ty: &Type) -> WeldResult<String> {
         Ok(match *ty {
+            Unit => "void".to_string(),
             Scalar(kind) => llvm_scalar_kind(kind).to_string(),
             Simd(kind) => format!("<{} x {}>", llvm_simd_size(&Scalar(kind))?, llvm_scalar_kind(kind)),
 
@@ -1744,7 +1756,10 @@ impl LlvmGenerator {
                 }
                 self.bld_names.get(bk).unwrap().to_string()
             }
-
+            Stream(ref elem) => {
+                let elem_type = self.llvm_type(elem)?;
+                format!("void ({}*)*", elem_type)
+            }
             _ => return weld_err!("Unsupported type {}", print_type(ty))?,
         })
     }
@@ -2284,6 +2299,10 @@ impl LlvmGenerator {
                 let bld_ty_str = self.llvm_type(&bld_ty)?;
                 self.bld_names.insert(bk.clone(), format!("{}.bld", bld_ty_str));
             }
+            StreamAppender(ref t) => {
+                let elem_type = self.llvm_type(t)?;
+                self.bld_names.insert(bk.clone(), format!("void ({}*)*", elem_type));
+            }
             Merger(ref t, _) => {
                 if self.merger_names.get(t) == None {
                     let elem_ty = self.llvm_type(t)?;
@@ -2401,6 +2420,9 @@ impl LlvmGenerator {
 
         let value_str = llvm_literal((*kind).clone()).unwrap();
         let elem_ty_str = match *kind {
+            UnitLiteral => {
+                return weld_err!("Cannot create SIMD UnitLiteral");
+            }
             BoolLiteral(_) => "i1",
             I8Literal(_) => "i8",
             I16Literal(_) => "i16",
@@ -2506,6 +2528,7 @@ impl LlvmGenerator {
         let serialize_fn = format!("{}.serialize", expr_ll_prefix);
 
         match *expr_ty {
+            Unit => unimplemented!(),
             Scalar(_) | Struct(_) if !expr_ty.has_pointer() => {
                 // These are primitive pointer-less values that we can store directly into the
                 // buffer.
@@ -2562,6 +2585,7 @@ impl LlvmGenerator {
                     ELEM = elem_ll_ty
                 ));
             }
+            Stream(_) => unimplemented!(),
             Dict(ref key, ref value) if !key.has_pointer() && !value.has_pointer() => {
                 // Dictionaries are serialized as <8-byte length (in # of Key/value pairs)>
                 // followed by packed {key, value} pairs. This case handles dictionaries where
@@ -2665,6 +2689,7 @@ impl LlvmGenerator {
         let deserialize_fn = format!("{}.deserialize", output_ll_prefix);
 
         match *output_ty {
+            Unit => unimplemented!(),
             Scalar(_) | Struct(_) if !output_ty.has_pointer() => {
                 let mut deserialize_code = CodeBuilder::new();
                 deserialize_code.add(format!(
@@ -2713,6 +2738,7 @@ impl LlvmGenerator {
                     ELEM = elem_ll_ty
                 ));
             }
+            Stream(_) => unimplemented!(),
             Dict(ref key, ref value) => {
                 // For dictionaries, the deserialization path for keys and values with and without
                 // pointers is the same.
@@ -2958,7 +2984,10 @@ impl LlvmGenerator {
                 }
             }
 
-            CUDF { ref symbol_name, ref args } => {
+            CUDF {
+                fun_ref: FunctionRef::SymbolName(ref symbol_name),
+                ref args,
+            } => {
                 let (output_ll_ty, output_ll_sym) = self.llvm_type_and_name(func, output)?;
                 if !self.cudf_names.contains(symbol_name) {
                     let mut arg_tys = vec![];
@@ -2980,6 +3009,27 @@ impl LlvmGenerator {
                 arg_tys.push(format!("{}* {}", &output_ll_ty, &output_ll_sym));
                 let parameters = arg_tys.join(", ");
                 ctx.code.add(format!("call void @{}({})", symbol_name, parameters));
+            }
+
+            CUDF {
+                fun_ref: FunctionRef::Pointer(ref func_pointer),
+                ref args,
+            } => {
+                let (func_type, func_sym) = self.llvm_type_and_name(func, func_pointer)?;
+                // Prepare the parameter list for the function
+                let mut arg_tys = vec![];
+                for ref arg in args {
+                    let (arg_ll_ty, arg_ll_sym) = self.llvm_type_and_name(func, arg)?;
+                    arg_tys.push(format!("{}* {}", arg_ll_ty, arg_ll_sym));
+                }
+                if let Ok((output_ll_ty, output_ll_sym)) = self.llvm_type_and_name(func, output) {
+                    if output_ll_ty != "void" {
+                        arg_tys.push(format!("{}* {}", &output_ll_ty, &output_ll_sym));
+                    }
+                }
+                let parameters = arg_tys.join(", ");
+                let func_loaded = self.gen_load_var(&func_sym, &func_type, ctx)?;
+                ctx.code.add(format!("call void {}({})", func_loaded, parameters));
             }
 
             MakeVector(ref elems) => {
@@ -3384,10 +3434,13 @@ impl LlvmGenerator {
             }
 
             Assign(ref value) => {
-                let (output_ll_ty, output_ll_sym) = self.llvm_type_and_name(func, output)?;
-                let (value_ll_ty, value_ll_sym) = self.llvm_type_and_name(func, value)?;
-                let val_tmp = self.gen_load_var(&value_ll_sym, &value_ll_ty, ctx)?;
-                self.gen_store_var(&val_tmp, &output_ll_sym, &output_ll_ty, ctx);
+                if let Ok((output_ll_ty, output_ll_sym)) = self.llvm_type_and_name(func, output) {
+                    if output_ll_ty != "void" {
+                        let (value_ll_ty, value_ll_sym) = self.llvm_type_and_name(func, value)?;
+                        let val_tmp = self.gen_load_var(&value_ll_sym, &value_ll_ty, ctx)?;
+                        self.gen_store_var(&val_tmp, &output_ll_sym, &output_ll_ty, ctx);
+                    }
+                }
             }
 
             GetField { ref value, index } => {
@@ -3519,7 +3572,7 @@ impl LlvmGenerator {
                     bld_ll_ty, bld_prefix, bld_ll_ty, bld_tmp, val_ll_ty, val_tmp
                 ));
             }
-
+            StreamAppender(_) => unimplemented!(),
             DictMerger(_, _, _) | GroupMerger(_, _) => {
                 let bld_tmp = self.gen_load_var(&bld_ll_sym, &bld_ll_ty, ctx)?;
                 let val_tmp = self.gen_load_var(&val_ll_sym, &val_ll_ty, ctx)?;
@@ -3580,7 +3633,7 @@ impl LlvmGenerator {
                 ctx.code.add(format!("{} = call {} {}.result({} {})", res_tmp, res_ll_ty, bld_prefix, bld_ll_ty, bld_tmp));
                 self.gen_store_var(&res_tmp, &res_ll_sym, &res_ll_ty, ctx);
             }
-
+            StreamAppender(_) => unimplemented!(),
             Merger(ref t, ref op) => {
                 // Type of element to merge.
                 let elem_ty_str = self.llvm_type(t)?;
@@ -3857,6 +3910,7 @@ impl LlvmGenerator {
                 ));
                 self.gen_store_var(&bld_tmp, &llvm_symbol(output), &bld_ty_str, ctx);
             }
+            StreamAppender(_) => unimplemented!(),
             Merger(ref elem_ty, ref op) => {
                 let elem_type = self.llvm_type(elem_ty)?;
                 let bld_tmp = ctx.var_ids.next();
@@ -3963,6 +4017,21 @@ impl LlvmGenerator {
                 arg_types.push_str("%work_t* %cur.work");
                 ctx.code.add(format!("call void @f{}({}, i32 %cur.tid)", func, arg_types));
                 ctx.code.add("br label %body.end");
+            }
+            
+            CallFunctionAndJump(func, block) => {
+                self.gen_top_level_function(sir, &sir.funcs[func])?;
+                let ref params_sorted = sir.funcs[func].params;
+                let mut arg_types = String::new();
+                for (arg, ty) in params_sorted.iter() {
+                    let ll_ty = self.llvm_type(&ty)?;
+                    let arg_tmp = self.gen_load_var(llvm_symbol(arg).as_str(), &ll_ty, ctx)?;
+                    let arg_str = format!("{} {}, ", ll_ty, arg_tmp);
+                    arg_types.push_str(&arg_str);
+                }
+                arg_types.push_str("%work_t* %cur.work");
+                ctx.code.add(format!("call void @f{}({}, i32 %cur.tid)", func, arg_types));
+                ctx.code.add(format!("br label %b.b{}", block));
             }
 
             ProgramReturn(ref sym) => {
@@ -4109,6 +4178,7 @@ fn llvm_lt(k: ScalarKind) -> &'static str {
 /// Returns an LLVM formatted String for a literal.
 fn llvm_literal(k: LiteralKind) -> WeldResult<String> {
     let res = match k {
+        UnitLiteral => "void".to_string(),
         BoolLiteral(l) => format!("{}", if l { 1 } else { 0 }),
         I8Literal(l) => format!("{}", l),
         I16Literal(l) => format!("{}", l),
@@ -4431,6 +4501,7 @@ fn predicate_only(code: &str) -> WeldResult<TypedExpr> {
     let mut e = parse_expr(code).unwrap();
     assert!(type_inference::infer_types(&mut e).is_ok());
     let mut typed_e = e.to_typed().unwrap();
+    assert!(iter_inference::infer_iterators(&mut typed_e).is_ok());
 
     let optstr = ["predicate"];
     let optpass = optstr.iter().map(|x| (*OPTIMIZATION_PASSES.get(x).unwrap()).clone()).collect();

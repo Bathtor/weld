@@ -10,9 +10,11 @@ use super::error::*;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PartialType {
     Unknown,
+    Unit,
     Scalar(ScalarKind),
     Simd(ScalarKind),
     Vector(Box<PartialType>),
+    Stream(Box<PartialType>),
     Dict(Box<PartialType>, Box<PartialType>),
     Builder(PartialBuilderKind, Annotations),
     Struct(Vec<PartialType>),
@@ -24,6 +26,7 @@ impl TypeBounds for PartialType {}
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PartialBuilderKind {
     Appender(Box<PartialType>),
+    StreamAppender(Box<PartialType>),
     // Key type, value type, merge type (struct of <key,value> pairs)
     DictMerger(Box<PartialType>, Box<PartialType>, Box<PartialType>, BinOpKind),
     // Key type, value type, merge type (struct of <key,value> pairs)
@@ -55,11 +58,14 @@ impl PartialType {
         use self::PartialType::*;
         match *self {
             Unknown => weld_err!("Incomplete partial type"),
+            Unit => Ok(Type::Unit),
             Scalar(kind) => Ok(Type::Scalar(kind)),
             Simd(kind) => Ok(Type::Simd(kind)),
             Vector(ref elem) => Ok(Type::Vector(Box::new(try!(elem.to_type())))),
+            Stream(ref elem) => Ok(Type::Stream(Box::new(try!(elem.to_type())))),
             Dict(ref kt, ref vt) => Ok(Type::Dict(Box::new(try!(kt.to_type())), Box::new(try!(vt.to_type())))),
             Builder(Appender(ref elem), ref annotations) => Ok(Type::Builder(BuilderKind::Appender(Box::new(try!(elem.to_type()))), annotations.clone())),
+            Builder(StreamAppender(ref elem), ref annotations) => Ok(Type::Builder(BuilderKind::StreamAppender(Box::new(try!(elem.to_type()))), annotations.clone())),
             Builder(DictMerger(ref kt, ref vt, _, op), ref annotations) => Ok(Type::Builder(
                 BuilderKind::DictMerger(Box::new(try!(kt.to_type())), Box::new(try!(vt.to_type())), op),
                 annotations.clone(),
@@ -94,17 +100,29 @@ impl PartialType {
         use self::PartialType::*;
         match *self {
             Unknown => false,
+            Unit => true,
             Scalar(_) => true,
             Simd(_) => true,
             Vector(ref elem) => elem.is_complete(),
+            Stream(ref elem) => elem.is_complete(),
             Dict(ref kt, ref vt) => kt.is_complete() && vt.is_complete(),
             Builder(Appender(ref elem), _) => elem.is_complete(),
+            Builder(StreamAppender(ref elem), _) => elem.is_complete(),
             Builder(DictMerger(ref kt, ref vt, _, _), _) => kt.is_complete() && vt.is_complete(),
             Builder(GroupMerger(ref kt, ref vt, _), _) => kt.is_complete() && vt.is_complete(),
             Builder(VecMerger(ref elem, _, _), _) => elem.is_complete(),
             Builder(Merger(ref elem, _), _) => elem.is_complete(),
             Struct(ref elems) => elems.iter().all(|e| e.is_complete()),
             Function(ref params, ref res) => params.iter().all(|p| p.is_complete()) && res.is_complete(),
+        }
+    }
+    
+    pub fn is_stream_builder(&self) -> bool {
+        use self::PartialBuilderKind::*;
+        use self::PartialType::*;
+        match self {
+            Builder(StreamAppender(_), _) => true,
+            _ => false,
         }
     }
 }
@@ -114,6 +132,7 @@ impl PartialBuilderKind {
         use self::PartialBuilderKind::*;
         match *self {
             Appender(ref elem) => *elem.clone(),
+            StreamAppender(ref elem) => *elem.clone(),
             DictMerger(_, _, ref mt, _) => *mt.clone(),
             GroupMerger(_, _, ref mt) => *mt.clone(),
             VecMerger(_, ref mt, _) => *mt.clone(),
@@ -125,6 +144,7 @@ impl PartialBuilderKind {
         use self::PartialBuilderKind::*;
         match *self {
             Appender(ref mut elem) => elem.as_mut(),
+            StreamAppender(ref mut elem) => elem.as_mut(),
             DictMerger(_, _, ref mut mt, _) => mt.as_mut(),
             GroupMerger(_, _, ref mut mt) => mt.as_mut(),
             VecMerger(_, ref mut mt, _) => mt.as_mut(),
@@ -137,6 +157,7 @@ impl PartialBuilderKind {
         use self::PartialType::*;
         match *self {
             Appender(ref elem) => Vector((*elem).clone()),
+            StreamAppender(ref elem) => Stream((*elem).clone()),
             DictMerger(ref kt, ref vt, _, _) => Dict((*kt).clone(), (*vt).clone()),
             GroupMerger(ref kt, ref vt, _) => Dict((*kt).clone(), Box::new(Vector((*vt).clone()))),
             VecMerger(ref elem, _, _) => Vector((*elem).clone()),
@@ -163,6 +184,7 @@ impl PartialExpr {
         }
 
         let new_kind: ExprKind<Type> = match self.kind {
+            Literal(UnitLiteral) => Literal(UnitLiteral),
             Literal(BoolLiteral(v)) => Literal(BoolLiteral(v)),
             Literal(I8Literal(v)) => Literal(I8Literal(v)),
             Literal(I16Literal(v)) => Literal(I16Literal(v)),

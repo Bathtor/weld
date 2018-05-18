@@ -44,6 +44,7 @@ impl ExprHash {
         // Hash the kind.
         match expr.kind {
             Literal(ref kind) => match *kind {
+                UnitLiteral => (),
                 BoolLiteral(v) => v.hash(&mut self.hasher),
                 I8Literal(v) => v.hash(&mut self.hasher),
                 I16Literal(v) => v.hash(&mut self.hasher),

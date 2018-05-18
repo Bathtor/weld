@@ -20,6 +20,12 @@ pub mod optimizations;
 pub type BasicBlockId = usize;
 pub type FunctionId = usize;
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum FunctionRef {
+    SymbolName(String),
+    Pointer(Symbol),
+}
+
 /// A non-terminating statement inside a basic block.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum StatementKind {
@@ -28,7 +34,7 @@ pub enum StatementKind {
     BinOp { op: BinOpKind, left: Symbol, right: Symbol },
     Broadcast(Symbol),
     Cast(Symbol, Type),
-    CUDF { symbol_name: String, args: Vec<Symbol> },
+    CUDF { fun_ref: FunctionRef, args: Vec<Symbol> },
     GetField { value: Symbol, index: u32 },
     KeyExists { child: Symbol, key: Symbol },
     Length(Symbol),
@@ -136,7 +142,11 @@ impl StatementKind {
                     vars.push(elem);
                 }
             }
-            CUDF { ref args, .. } => {
+            CUDF { ref args, ref fun_ref } => {
+                match fun_ref {
+                    FunctionRef::Pointer(ref s) => vars.push(s),
+                    _ => (),
+                }
                 for arg in args {
                     vars.push(arg);
                 }
@@ -251,15 +261,25 @@ pub struct ParallelForData {
     pub grain_size: Option<i32>,
 }
 
+//#[derive(Clone, PartialEq, Eq, Hash)]
+//pub struct StreamForData {
+//    pub source: Iter,
+//    pub sink: Symbol,
+//    pub loop_body: FunctionId,
+//    pub map_body: FunctionId,
+//}
+
 /// A terminating statement inside a basic block.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Terminator {
     Branch { cond: Symbol, on_true: BasicBlockId, on_false: BasicBlockId },
     JumpBlock(BasicBlockId),
     JumpFunction(FunctionId),
+    CallFunctionAndJump(FunctionId, BasicBlockId),
     ProgramReturn(Symbol),
     EndFunction,
     ParallelFor(ParallelForData),
+    // StreamFor(StreamForData),
     Crash,
 }
 
@@ -403,7 +423,14 @@ impl fmt::Display for StatementKind {
             Serialize(ref child) => write!(f, "serialize({})", child),
             Deserialize(ref child) => write!(f, "deserialize({})", child),
             Cast(ref child, ref ty) => write!(f, "cast({}, {})", child, print_type(ty)),
-            CUDF { ref symbol_name, ref args } => write!(f, "cudf[{}]{}", symbol_name, join("(", ", ", ")", args.iter().map(|e| format!("{}", e)))),
+            CUDF {
+                fun_ref: FunctionRef::SymbolName(ref symbol_name),
+                ref args,
+            } => write!(f, "cudf[{}]{}", symbol_name, join("(", ", ", ")", args.iter().map(|e| format!("{}", e)))),
+            CUDF {
+                fun_ref: FunctionRef::Pointer(ref value),
+                ref args,
+            } => write!(f, "cudf[*{}]{}", value, join("(", ", ", ")", args.iter().map(|e| format!("{}", e)))),
             GetField { ref value, index } => write!(f, "{}.${}", value, index),
             KeyExists { ref child, ref key } => write!(f, "keyexists({}, {})", child, key),
             Length(ref child) => write!(f, "len({})", child),
@@ -465,6 +492,7 @@ impl fmt::Display for Terminator {
             }
             JumpBlock(block) => write!(f, "jump B{}", block),
             JumpFunction(func) => write!(f, "jump F{}", func),
+            CallFunctionAndJump(func, block) => write!(f, "call F{} jump B{}", func, block),
             ProgramReturn(ref sym) => write!(f, "return {}", sym),
             EndFunction => write!(f, "end"),
             Crash => write!(f, "crash"),
@@ -480,6 +508,8 @@ impl fmt::Display for ParallelForIter {
             IterKind::FringeIter => "fringeiter",
             IterKind::NdIter => "nditer",
             IterKind::RangeIter => "rangeiter",
+            IterKind::NextIter => "nextiter",
+            IterKind::UnknownIter => "?iter",
         };
 
         if self.shape.is_some() {
@@ -609,6 +639,7 @@ fn sir_param_correction_helper(prog: &mut SirProgram, func_id: FunctionId, env: 
             }
             JumpBlock(_) => {}
             JumpFunction(_) => {}
+            CallFunctionAndJump(_, _) => {}
             EndFunction => {}
             Crash => {}
         }
@@ -626,6 +657,9 @@ fn sir_param_correction_helper(prog: &mut SirProgram, func_id: FunctionId, env: 
                 sir_param_correction_helper(prog, pf.cont, env, &mut inner_closure, visited);
             }
             JumpFunction(jump_func) => {
+                sir_param_correction_helper(prog, jump_func, env, &mut inner_closure, visited);
+            }
+            CallFunctionAndJump(jump_func, _) => {
                 sir_param_correction_helper(prog, jump_func, env, &mut inner_closure, visited);
             }
             Branch { .. } => {}
@@ -1026,16 +1060,31 @@ fn gen_expr(
         ExprKind::Merge { ref builder, ref value } => {
             // This expression doesn't return a symbol, so just add a statement for it directly
             // instead of calling the tracker.
-            let (cur_func, cur_block, builder_sym) = gen_expr(builder, prog, cur_func, cur_block, tracker, multithreaded)?;
-            let (cur_func, cur_block, elem_sym) = gen_expr(value, prog, cur_func, cur_block, tracker, multithreaded)?;
-            prog.funcs[cur_func].blocks[cur_block].add_statement(Statement::new(
-                None,
-                Merge {
-                    builder: builder_sym.clone(),
-                    value: elem_sym,
-                },
-            ));
-            Ok((cur_func, cur_block, builder_sym))
+            match builder.ty {
+                Type::Builder(BuilderKind::StreamAppender(_), _) => {
+                    let (cur_func, cur_block, sink_sym) = gen_expr(builder, prog, cur_func, cur_block, tracker, multithreaded)?;
+                    let (cur_func, cur_block, elem_sym) = gen_expr(value, prog, cur_func, cur_block, tracker, multithreaded)?;
+                    let sink_fun = CUDF {
+                        fun_ref: FunctionRef::Pointer(sink_sym.clone()),
+                        args: vec![elem_sym],
+                    };
+                    //let sink_ret = tracker.symbol_for_statement(prog, cur_func, cur_block, &Type::Unit, sink_fun);
+                    prog.funcs[cur_func].blocks[cur_block].add_statement(Statement::new(None, sink_fun));
+                    Ok((cur_func, cur_block, sink_sym))
+                }
+                _ => {
+                    let (cur_func, cur_block, builder_sym) = gen_expr(builder, prog, cur_func, cur_block, tracker, multithreaded)?;
+                    let (cur_func, cur_block, elem_sym) = gen_expr(value, prog, cur_func, cur_block, tracker, multithreaded)?;
+                    prog.funcs[cur_func].blocks[cur_block].add_statement(Statement::new(
+                        None,
+                        Merge {
+                            builder: builder_sym.clone(),
+                            value: elem_sym,
+                        },
+                    ));
+                    Ok((cur_func, cur_block, builder_sym))
+                }
+            }
         }
 
         ExprKind::Res { ref builder } => {
@@ -1110,7 +1159,7 @@ fn gen_expr(
             }
             let kind = CUDF {
                 args: syms,
-                symbol_name: sym_name.clone(),
+                fun_ref: FunctionRef::SymbolName(sym_name.clone()),
             };
             let res_sym = tracker.symbol_for_statement(prog, cur_func, cur_block, &expr.ty, kind);
             Ok((cur_func, cur_block, res_sym))
@@ -1130,59 +1179,94 @@ fn gen_expr(
 
         ExprKind::For { ref iters, ref builder, ref func } => {
             if let ExprKind::Lambda { ref params, ref body } = func.kind {
-                let (cur_func, cur_block, builder_sym) = gen_expr(builder, prog, cur_func, cur_block, tracker, multithreaded)?;
-                let body_func = prog.add_func();
-                let body_block = prog.funcs[body_func].add_block();
-                prog.add_local_named(&params[0].ty, &params[0].name, body_func);
-                prog.add_local_named(&params[1].ty, &params[1].name, body_func);
-                prog.add_local_named(&params[2].ty, &params[2].name, body_func);
-                prog.funcs[body_func].params.insert(builder_sym.clone(), builder.ty.clone());
-                let mut cur_func = cur_func;
-                let mut cur_block = cur_block;
-                let mut pf_iters: Vec<ParallelForIter> = Vec::new();
-                for iter in iters.iter() {
-                    let data_res = gen_expr(&iter.data, prog, cur_func, cur_block, tracker, multithreaded)?;
-                    cur_func = data_res.0;
-                    cur_block = data_res.1;
-                    prog.funcs[body_func].params.insert(data_res.2.clone(), iter.data.ty.clone());
-                    let start_sym = try!(get_iter_sym(&iter.start, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
-                    let end_sym = try!(get_iter_sym(&iter.end, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
-                    let stride_sym = try!(get_iter_sym(&iter.stride, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
-                    let shape_sym = try!(get_iter_sym(&iter.shape, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
-                    let strides_sym = try!(get_iter_sym(&iter.strides, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
-                    pf_iters.push(ParallelForIter {
-                        data: data_res.2,
-                        start: start_sym,
-                        end: end_sym,
-                        stride: stride_sym,
-                        kind: iter.kind.clone(),
-                        shape: shape_sym,
-                        strides: strides_sym,
-                    });
-                }
-                let (body_end_func, body_end_block, _) = gen_expr(body, prog, body_func, body_block, tracker, multithreaded)?;
-                prog.funcs[body_end_func].blocks[body_end_block].terminator = EndFunction;
-                let cont_func = prog.add_func();
-                let cont_block = prog.funcs[cont_func].add_block();
-                let mut is_innermost = true;
-                body.traverse(&mut |ref e| {
-                    if let ExprKind::For { .. } = e.kind {
-                        is_innermost = false;
+                if params.len() == 3 {
+                    // is normal parallel for
+                    let (cur_func, cur_block, builder_sym) = gen_expr(builder, prog, cur_func, cur_block, tracker, multithreaded)?;
+                    let body_func = prog.add_func();
+                    let body_block = prog.funcs[body_func].add_block();
+                    prog.add_local_named(&params[0].ty, &params[0].name, body_func);
+                    prog.add_local_named(&params[1].ty, &params[1].name, body_func);
+                    prog.add_local_named(&params[2].ty, &params[2].name, body_func);
+                    prog.funcs[body_func].params.insert(builder_sym.clone(), builder.ty.clone());
+                    let mut cur_func = cur_func;
+                    let mut cur_block = cur_block;
+                    let mut pf_iters: Vec<ParallelForIter> = Vec::new();
+                    for iter in iters.iter() {
+                        let data_res = gen_expr(&iter.data, prog, cur_func, cur_block, tracker, multithreaded)?;
+                        cur_func = data_res.0;
+                        cur_block = data_res.1;
+                        prog.funcs[body_func].params.insert(data_res.2.clone(), iter.data.ty.clone());
+                        let start_sym = try!(get_iter_sym(&iter.start, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
+                        let end_sym = try!(get_iter_sym(&iter.end, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
+                        let stride_sym = try!(get_iter_sym(&iter.stride, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
+                        let shape_sym = try!(get_iter_sym(&iter.shape, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
+                        let strides_sym = try!(get_iter_sym(&iter.strides, prog, &mut cur_func, &mut cur_block, tracker, multithreaded, body_func));
+                        pf_iters.push(ParallelForIter {
+                            data: data_res.2,
+                            start: start_sym,
+                            end: end_sym,
+                            stride: stride_sym,
+                            kind: iter.kind.clone(),
+                            shape: shape_sym,
+                            strides: strides_sym,
+                        });
                     }
-                });
-                prog.funcs[cur_func].blocks[cur_block].terminator = ParallelFor(ParallelForData {
-                    data: pf_iters,
-                    builder: builder_sym.clone(),
-                    data_arg: params[2].name.clone(),
-                    builder_arg: params[0].name.clone(),
-                    idx_arg: params[1].name.clone(),
-                    body: body_func,
-                    cont: cont_func,
-                    innermost: is_innermost,
-                    always_use_runtime: expr.annotations.always_use_runtime(),
-                    grain_size: expr.annotations.grain_size().clone(),
-                });
-                Ok((cont_func, cont_block, builder_sym))
+                    let (body_end_func, body_end_block, _) = gen_expr(body, prog, body_func, body_block, tracker, multithreaded)?;
+                    prog.funcs[body_end_func].blocks[body_end_block].terminator = EndFunction;
+                    let cont_func = prog.add_func();
+                    let cont_block = prog.funcs[cont_func].add_block();
+                    let mut is_innermost = true;
+                    body.traverse(&mut |ref e| {
+                        if let ExprKind::For { .. } = e.kind {
+                            is_innermost = false;
+                        }
+                    });
+                    prog.funcs[cur_func].blocks[cur_block].terminator = ParallelFor(ParallelForData {
+                        data: pf_iters,
+                        builder: builder_sym.clone(),
+                        data_arg: params[2].name.clone(),
+                        builder_arg: params[0].name.clone(),
+                        idx_arg: params[1].name.clone(),
+                        body: body_func,
+                        cont: cont_func,
+                        innermost: is_innermost,
+                        always_use_runtime: expr.annotations.always_use_runtime(),
+                        grain_size: expr.annotations.grain_size().clone(),
+                    });
+                    Ok((cont_func, cont_block, builder_sym))
+                } else if params.len() == 2 {
+                    // is stream For
+                    let loop_start = cur_block; //prog.funcs[cur_func].add_block();
+
+                    let iter = &iters[0];
+                    let (cur_func, _cur_block, source_sym) = gen_expr(&iter.data, prog, cur_func, loop_start, tracker, multithreaded)?;
+                    let source_fun = CUDF {
+                        fun_ref: FunctionRef::Pointer(source_sym),
+                        args: Vec::new(),
+                    };
+                    let source_next = tracker.symbol_for_statement(prog, cur_func, loop_start, &params[1].ty, source_fun);
+                    let (cur_func, _cur_block, sink_sym) = gen_expr(builder, prog, cur_func, loop_start, tracker, multithreaded)?;
+                    let body_func = prog.add_func();
+                    let body_block = prog.funcs[body_func].add_block();
+                    prog.add_local_named(&params[0].ty, &params[0].name, body_func);
+                    prog.add_local_named(&params[1].ty, &params[1].name, body_func);
+                    prog.funcs[body_func].params.insert(sink_sym.clone(), builder.ty.clone());
+                    prog.funcs[body_func].params.insert(source_next.clone(), params[1].ty.clone());
+                    prog.funcs[body_func].blocks[body_block].add_statement(Statement::new(Some(params[0].name.clone()), Assign(sink_sym)));
+                    prog.funcs[body_func].blocks[body_block].add_statement(Statement::new(Some(params[1].name.clone()), Assign(source_next)));
+                    let (body_end_func, body_end_block, _) = gen_expr(body, prog, body_func, body_block, tracker, multithreaded)?;
+                    //prog.funcs[body_end_func].blocks[body_end_block].add_statement(Statement::new(None, Assign(fret_sym)));
+
+                    prog.funcs[body_func].blocks[body_block].terminator = EndFunction;
+                    prog.funcs[cur_func].blocks[loop_start].terminator = CallFunctionAndJump(body_func, loop_start);
+
+                    let end_block = prog.funcs[cur_func].add_block();
+                    let ret_sym = tracker.symbol_for_statement(prog, cur_func, end_block, &Type::Scalar(ScalarKind::I32), AssignLiteral(LiteralKind::I32Literal(0)));
+
+                    Ok((cur_func, end_block, ret_sym))
+                } else {
+                    weld_err!("Argument to For was not a 2 or 3 param Lambda : {}", print_expr(func))
+                }
             } else {
                 weld_err!("Argument to For was not a Lambda: {}", print_expr(func))
             }
