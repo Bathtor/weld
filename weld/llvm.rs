@@ -2985,7 +2985,7 @@ impl LlvmGenerator {
             }
 
             CUDF {
-                fun_ref: FunctionRef::SymbolName(ref symbol_name),
+                fun_ref: sir::FunctionRef::SymbolName(ref symbol_name),
                 ref args,
             } => {
                 let (output_ll_ty, output_ll_sym) = self.llvm_type_and_name(func, output)?;
@@ -3012,7 +3012,7 @@ impl LlvmGenerator {
             }
 
             CUDF {
-                fun_ref: FunctionRef::Pointer(ref func_pointer),
+                fun_ref: sir::FunctionRef::Pointer(ref func_pointer),
                 ref args,
             } => {
                 let (func_type, func_sym) = self.llvm_type_and_name(func, func_pointer)?;

@@ -202,7 +202,7 @@ impl PartialExpr {
             Ident(ref name) => Ident(name.clone()),
 
             CUDF {
-                ref sym_name,
+                func_ref: FunctionRef::Name(ref sym_name),
                 ref args,
                 ref return_ty,
             } => {
@@ -210,7 +210,22 @@ impl PartialExpr {
                 let args: WeldResult<Vec<_>> = args.iter().map(|e| e.to_typed()).collect();
                 let return_ty: Box<Type> = Box::new(try!(return_ty.to_type()));
                 CUDF {
-                    sym_name: sym_name,
+                    func_ref: FunctionRef::Name(sym_name),
+                    args: try!(args),
+                    return_ty: return_ty,
+                }
+            }
+            
+            CUDF {
+                func_ref: FunctionRef::Pointer(ref func_pointer),
+                ref args,
+                ref return_ty,
+            } => {
+                let typed_pointer = typed_box(func_pointer)?;
+                let args: WeldResult<Vec<_>> = args.iter().map(|e| e.to_typed()).collect();
+                let return_ty: Box<Type> = Box::new(try!(return_ty.to_type()));
+                CUDF {
+                    func_ref: FunctionRef::Pointer(typed_pointer),
                     args: try!(args),
                     return_ty: return_ty,
                 }
@@ -362,6 +377,8 @@ impl PartialExpr {
                 initial: try!(typed_box(initial)),
                 update_func: try!(typed_box(update_func)),
             },
+
+            Next(ref iterable) => Next(typed_box(iterable)?),
 
             Select {
                 ref cond,

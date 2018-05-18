@@ -8,6 +8,7 @@ use super::transforms::loop_fusion;
 use super::transforms::loop_fusion_2;
 use super::transforms::short_circuit;
 use super::transforms::size_inference;
+use super::transforms::stream_translation;
 use super::transforms::unroller;
 use super::transforms::vectorizer;
 
@@ -131,6 +132,7 @@ lazy_static! {
                 "algebraicopts",
             ),
         );
+        m.insert("streams",Pass::new(vec![Transformation::new(stream_translation::translate_stream_types)], "streams"));
         m
     };
 }

@@ -113,8 +113,11 @@ impl ExprHash {
                 }
                 finished_subexpressions = true;
             }
-            CUDF { ref sym_name, ref return_ty, .. } => {
+            CUDF { func_ref: FunctionRef::Name(ref sym_name), ref return_ty, .. } => {
                 sym_name.hash(&mut self.hasher);
+                return_ty.hash(&mut self.hasher);
+            }
+            CUDF { func_ref: FunctionRef::Pointer(_), ref return_ty, .. } => {
                 return_ty.hash(&mut self.hasher);
             }
             Deserialize { ref value_ty, .. } => {
@@ -140,6 +143,7 @@ impl ExprHash {
             | Sort { .. }
             | If { .. }
             | Iterate { .. }
+            | Next(_)
             | Select { .. }
             | Apply { .. }
             | NewBuilder(_)

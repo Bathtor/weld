@@ -9,6 +9,7 @@ use std::vec::Vec;
 use super::ast::BinOpKind;
 use super::ast::BinOpKind::*;
 use super::ast::ExprKind::*;
+use super::ast::FunctionRef;
 use super::ast::Iter;
 use super::ast::IterKind::*;
 use super::ast::LiteralKind::*;
@@ -859,6 +860,13 @@ impl<'t> Parser<'t> {
                 ))
             }
 
+            TNext => {
+                try!(self.consume(TOpenParen));
+                let iterable = try!(self.expr());
+                try!(self.consume(TCloseParen));
+                Ok(expr_box(Next(iterable), Annotations::new()))
+            }
+
             TSelect => {
                 try!(self.consume(TOpenParen));
                 let cond = try!(self.expr());
@@ -925,7 +933,7 @@ impl<'t> Parser<'t> {
                 try!(self.consume(TCloseParen));
                 Ok(expr_box(
                     CUDF {
-                        sym_name: sym_name.name,
+                        func_ref: FunctionRef::Name(sym_name.name),
                         return_ty: Box::new(return_ty),
                         args: args,
                     },

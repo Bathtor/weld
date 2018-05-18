@@ -258,8 +258,8 @@ pub enum IterKind {
     FringeIter, // A fringe iterator, handling the fringe of a vector iter.
     NdIter,     // multi-dimensional nd-iter
     RangeIter,
-    NextIter, // An iterator over a function that returns one value at a time
-    UnknownIter,  // iterator still needs to be inferred from data types
+    NextIter,    // An iterator over a function that returns one value at a time
+    UnknownIter, // iterator still needs to be inferred from data types
 }
 
 impl fmt::Display for IterKind {
@@ -272,7 +272,7 @@ impl fmt::Display for IterKind {
             NdIter => "nditer",
             RangeIter => "range",
             NextIter => "next",
-            UnknownIter => "?iter"
+            UnknownIter => "?iter",
         };
         f.write_str(text)
     }
@@ -298,6 +298,12 @@ impl<T: TypeBounds> Iter<T> {
     pub fn is_simple(&self) -> bool {
         return self.start.is_none() && self.end.is_none() && self.stride.is_none() && self.kind == IterKind::ScalarIter;
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FunctionRef<T: TypeBounds> {
+    Name(String),
+    Pointer(Box<Expr<T>>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -373,6 +379,7 @@ pub enum ExprKind<T: TypeBounds> {
         initial: Box<Expr<T>>,
         update_func: Box<Expr<T>>,
     },
+    Next(Box<Expr<T>>),
     Select {
         cond: Box<Expr<T>>,
         on_true: Box<Expr<T>>,
@@ -387,7 +394,7 @@ pub enum ExprKind<T: TypeBounds> {
         params: Vec<Expr<T>>,
     },
     CUDF {
-        sym_name: String,
+        func_ref: FunctionRef<T>,
         args: Vec<Expr<T>>,
         return_ty: Box<T>,
     },
@@ -437,6 +444,7 @@ impl<T: TypeBounds> ExprKind<T> {
             Let { .. } => "Let",
             If { .. } => "If",
             Iterate { .. } => "Iterate",
+            Next(_) => "Next",
             Select { .. } => "Select",
             Lambda { .. } => "Lambda",
             Apply { .. } => "Apply",
@@ -624,6 +632,7 @@ impl<T: TypeBounds> Expr<T> {
                 ref on_false,
             } => vec![cond.as_ref(), on_true.as_ref(), on_false.as_ref()],
             Iterate { ref initial, ref update_func } => vec![initial.as_ref(), update_func.as_ref()],
+            Next(ref iterable) => vec![iterable.as_ref()],
             Select {
                 ref cond,
                 ref on_true,
@@ -643,7 +652,20 @@ impl<T: TypeBounds> Expr<T> {
             }
             Serialize(ref e) => vec![e.as_ref()],
             Deserialize { ref value, .. } => vec![value.as_ref()],
-            CUDF { ref args, .. } => args.iter().collect(),
+            CUDF {
+                func_ref: FunctionRef::Name(_),
+                ref args,
+                ..
+            } => args.iter().collect(),
+            CUDF {
+                func_ref: FunctionRef::Pointer(ref e),
+                ref args,
+                ..
+            } => {
+                let mut v: Vec<&Expr<T>> = args.iter().collect();
+                v.push(e);
+                v
+            }
             Negate(ref t) => vec![t.as_ref()],
             Not(ref t) => vec![t.as_ref()],
             Broadcast(ref t) => vec![t.as_ref()],
@@ -708,6 +730,7 @@ impl<T: TypeBounds> Expr<T> {
                 ref mut initial,
                 ref mut update_func,
             } => vec![initial.as_mut(), update_func.as_mut()],
+            Next(ref mut iterable) => vec![iterable.as_mut()],
             Select {
                 ref mut cond,
                 ref mut on_true,
@@ -728,7 +751,20 @@ impl<T: TypeBounds> Expr<T> {
             }
             Serialize(ref mut e) => vec![e.as_mut()],
             Deserialize { ref mut value, .. } => vec![value.as_mut()],
-            CUDF { ref mut args, .. } => args.iter_mut().collect(),
+            CUDF {
+                func_ref: FunctionRef::Name(_),
+                ref mut args,
+                ..
+            } => args.iter_mut().collect(),
+            CUDF {
+                func_ref: FunctionRef::Pointer(ref mut e),
+                ref mut args,
+                ..
+            } => {
+                let mut v: Vec<&mut Expr<T>> = args.iter_mut().collect();
+                v.push(e);
+                v
+            }
             Negate(ref mut t) => vec![t.as_mut()],
             Not(ref mut t) => vec![t.as_mut()],
             Broadcast(ref mut t) => vec![t.as_mut()],
@@ -805,20 +841,24 @@ impl<T: TypeBounds> Expr<T> {
                 (&Apply { .. }, &Apply { .. }) => Ok(true),
                 (
                     &CUDF {
-                        sym_name: ref sym_name1,
+                        func_ref: ref func_ref1,
                         return_ty: ref return_ty1,
                         ..
                     },
                     &CUDF {
-                        sym_name: ref sym_name2,
+                        func_ref: ref func_ref2,
                         return_ty: ref return_ty2,
                         ..
                     },
-                ) => {
-                    let mut matches = sym_name1 == sym_name2;
-                    matches = matches && return_ty1 == return_ty2;
-                    Ok(matches)
-                }
+                ) => match (func_ref1, func_ref2) {
+                    (&FunctionRef::Name(ref sym_name1), &FunctionRef::Name(ref sym_name2)) => {
+                        let mut matches = sym_name1 == sym_name2;
+                        matches = matches && return_ty1 == return_ty2;
+                        Ok(matches)
+                    }
+                    (&FunctionRef::Pointer(_), &FunctionRef::Pointer(_)) => Ok(true),
+                    _ => Ok(false),
+                },
                 (&Serialize(_), &Serialize(_)) => Ok(true),
                 (&Deserialize { ref value_ty, .. }, &Deserialize { value_ty: ref value_ty2, .. }) if value_ty == value_ty2 => Ok(true),
                 (&Literal(ref l), &Literal(ref r)) if l == r => Ok(true),

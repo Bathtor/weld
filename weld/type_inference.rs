@@ -601,6 +601,11 @@ fn infer_locally(expr: &mut PartialExpr, env: &mut TypeMap) -> WeldResult<bool> 
             Ok(changed)
         }
 
+        Next(ref mut iterable) => match iterable.ty {
+            Stream(ref mut elem_ty) => sync_types(&mut expr.ty, elem_ty, "Next"),
+            _ => return weld_err!("next can only be called on Streams"),
+        },
+
         Select {
             ref mut cond,
             ref mut on_true,

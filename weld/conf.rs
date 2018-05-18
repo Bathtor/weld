@@ -42,6 +42,7 @@ lazy_static! {
             "predicate",
             "vectorize",
             "fix-iterate",
+            "streams"
         ];
         m.iter().map(|e| (*OPTIMIZATION_PASSES.get(e).unwrap()).clone()).collect()
     };

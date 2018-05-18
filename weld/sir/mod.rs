@@ -6,6 +6,7 @@ use std::fmt;
 
 use std::vec;
 
+use super::ast;
 use super::ast::Type::*;
 use super::ast::*;
 use super::error::*;
@@ -1146,7 +1147,11 @@ fn gen_expr(
             Ok((cur_func, cur_block, res_sym))
         }
 
-        ExprKind::CUDF { ref sym_name, ref args, .. } => {
+        ExprKind::CUDF {
+            func_ref: ast::FunctionRef::Name(ref sym_name),
+            ref args,
+            ..
+        } => {
             let mut syms = vec![];
             let mut cur_func = cur_func;
             let mut cur_block = cur_block;
@@ -1160,6 +1165,30 @@ fn gen_expr(
             let kind = CUDF {
                 args: syms,
                 fun_ref: FunctionRef::SymbolName(sym_name.clone()),
+            };
+            let res_sym = tracker.symbol_for_statement(prog, cur_func, cur_block, &expr.ty, kind);
+            Ok((cur_func, cur_block, res_sym))
+        }
+
+        ExprKind::CUDF {
+            func_ref: ast::FunctionRef::Pointer(ref func_pointer),
+            ref args,
+            ..
+        } => {
+            let mut syms = vec![];
+            let mut cur_func = cur_func;
+            let mut cur_block = cur_block;
+            for arg in args.iter() {
+                let r = gen_expr(arg, prog, cur_func, cur_block, tracker, multithreaded)?;
+                cur_func = r.0;
+                cur_block = r.1;
+                let sym = r.2;
+                syms.push(sym);
+            }
+            let (cur_func, cur_block, func_sym) = gen_expr(func_pointer, prog, cur_func, cur_block, tracker, multithreaded)?;
+            let kind = CUDF {
+                args: syms,
+                fun_ref: FunctionRef::Pointer(func_sym),
             };
             let res_sym = tracker.symbol_for_statement(prog, cur_func, cur_block, &expr.ty, kind);
             Ok((cur_func, cur_block, res_sym))

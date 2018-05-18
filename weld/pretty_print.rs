@@ -211,12 +211,23 @@ fn print_expr_impl<T: PrintableType>(expr: &Expr<T>, typed: bool, indent: i32, s
         Broadcast(ref e) => format!("broadcast({})", print_expr_impl(e, typed, indent, should_indent)),
 
         CUDF {
-            ref sym_name,
+            func_ref: FunctionRef::Name(ref sym_name),
             ref args,
             ref return_ty,
         } => format!(
             "cudf[{},{}]{}",
             sym_name,
+            return_ty.print(),
+            join("(", ",", ")", args.iter().map(|e| print_expr_impl(e, typed, indent, should_indent)))
+        ),
+        
+        CUDF {
+            func_ref: FunctionRef::Pointer(ref func_pointer),
+            ref args,
+            ref return_ty,
+        } => format!(
+            "cudf[*({}),{}]{}",
+            print_expr_impl(func_pointer, typed, indent, should_indent),
             return_ty.print(),
             join("(", ",", ")", args.iter().map(|e| print_expr_impl(e, typed, indent, should_indent)))
         ),
@@ -347,6 +358,8 @@ fn print_expr_impl<T: PrintableType>(expr: &Expr<T>, typed: bool, indent: i32, s
             less_indent_str
         ),
 
+        Next(ref iterable) => format!("next({})", print_expr_impl(iterable, typed, indent, should_indent)),
+        
         Select {
             ref cond,
             ref on_true,

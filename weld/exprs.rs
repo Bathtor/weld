@@ -356,7 +356,18 @@ pub fn apply_expr(func: Expr<Type>, params: Vec<Expr<Type>>) -> WeldResult<Expr<
 pub fn cudf_expr(sym_name: String, args: Vec<Expr<Type>>, return_ty: Type) -> WeldResult<Expr<Type>> {
     new_expr(
         CUDF {
-            sym_name: sym_name,
+            func_ref: FunctionRef::Name(sym_name),
+            args: args,
+            return_ty: Box::new(return_ty.clone()),
+        },
+        return_ty,
+    )
+}
+
+pub fn cudf_pointer_expr(func_pointer: Expr<Type>, args: Vec<Expr<Type>>, return_ty: Type) -> WeldResult<Expr<Type>> {
+    new_expr(
+        CUDF {
+            func_ref: FunctionRef::Pointer(Box::new(func_pointer)),
             args: args,
             return_ty: Box::new(return_ty.clone()),
         },

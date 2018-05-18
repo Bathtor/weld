@@ -10,3 +10,4 @@ pub mod size_inference;
 pub mod uniquify;
 pub mod unroller;
 pub mod vectorizer;
+pub mod stream_translation;
